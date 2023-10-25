@@ -3,6 +3,9 @@
 #include <WiFiClient.h>
 #include <WiFiAP.h>
 
+#define pumpPin 9
+#define optimalHumidity 100
+
 DFRobot_SHT40 SHT40(SHT40_AD1B_IIC_ADDR);
 
 uint32_t sensor_id = 0;
@@ -20,7 +23,8 @@ uint32_t get_device_id(uint32_t *device_id){
 }
 
 void setup() {
-  pinMode(LED_BUILTIN, OUTPUT);
+  pinMode(pumpPin, OUTPUT);
+  digitalWrite(pumpPin, LOW);
   Serial.begin(57600);
   if (device_id == 0){
     device_id = get_device_id(&device_id);
@@ -84,6 +88,14 @@ void loop() {
           //   client.print("Temperature :"); client.print(temperature); client.println(" C");
           // }
           client.println();
+          if (humidityValue < optimalHumidity) {
+            //Open pump
+            analogWrite(pumpPin, HIGH);
+          }
+          else{
+            //Close pump
+            analogWrite(pumpPin, LOW);
+          }
           break;
         } else {
           currentLine = "";
