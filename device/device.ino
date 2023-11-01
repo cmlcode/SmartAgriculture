@@ -1,115 +1,126 @@
-#include "DFRobot_SHT40.h"
 #include <WiFi.h>
 #include <WiFiClient.h>
-#include <WiFiAP.h>
-
-#define pumpPin 9
-#define optimalHumidity 100
+#include <PubSubClient.h>
+#include "DFRobot_SHT40.h"
+#define relaypin 4
 
 DFRobot_SHT40 SHT40(SHT40_AD1B_IIC_ADDR);
 
-uint32_t sensor_id = 0;
-uint32_t device_id = 0;
+// Set your WiFi credentials
+const char* ssid = "liberty";
+const char* password = "12345678";
+const char* mqttServer = "54.206.127.177";
+const char* mqttUser = "Jack";
+const char* mqttPassword = "123456";
+const int mqttPort = 1883;
+const int plant_id = 1;
+long int open_time = 0;
+
+WiFiClient espClient;
+PubSubClient mqttClient(espClient);
+
+uint32_t id = 0;
 float temperature;
 int humidityValue;
+float expext_temperature_low = 0;
+float expext_temperature_high = 0;
+float expect_humidity_low = 0;
+float expect_humidity_high = 0;
 
-const char *ssid = "esp32";
-const char *password = "123456789";
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  char payloadStr[length + 1];
+  memcpy(payloadStr, payload, length);
+  payloadStr[length] = '\0';
+  Serial.println(payloadStr);
+  int expected_plant_id;
+  float temp1,temp2,temp3,temp4;
+  int ret = sscanf(payloadStr, "%d %f %f %f %f", &expected_plant_id,&temp1,&temp2,&temp3,&temp4);
+  if(ret==5){
+    if(expected_plant_id==plant_id){
+      expect_humidity_low = temp1;
+      expect_humidity_high = temp2;
+      expext_temperature_low = temp3;
+      expext_temperature_high = temp4;
+      Serial.println("configuration received: comfort temperature: "+String(expext_temperature_low)+"-"+String(expext_temperature_high)+" humidity: "+String(expect_humidity_low)+"-"+String(expect_humidity_high));
+      Serial.println("---------------------------------------------");
+    }
+  }
+}
 
-WiFiServer server(80);
-
-uint32_t get_device_id(uint32_t *device_id){
-  return 2;
+void reconnect() {
+  while (!mqttClient.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    if (mqttClient.connect("ESP32Client", mqttUser, mqttPassword)) {
+      Serial.println("connected");
+      if (mqttClient.subscribe("config")) {
+        Serial.println("Subscribed to topic: config");
+      } else {
+        Serial.println("Failed to subscribe");
+      }
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(mqttClient.state());
+      Serial.println(" try again in 5 seconds");
+      delay(5000);
+    }
+  }
 }
 
 void setup() {
-  pinMode(pumpPin, OUTPUT);
-  digitalWrite(pumpPin, LOW);
-  Serial.begin(57600);
-  if (device_id == 0){
-    device_id = get_device_id(&device_id);
+  pinMode(relaypin, OUTPUT);
+  Serial.begin(115200);
+  // Connect to WiFi
+  
+  Serial.println("Connecting to WiFi...");
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
   }
+  Serial.println("");
+  Serial.println("Connected to WiFi!");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
   // Initialize the SHT40 sensor
   SHT40.begin();
-  while((sensor_id = SHT40.getDeviceID()) == 0){
+  while((id = SHT40.getDeviceID()) == 0) {
     Serial.println("ID retrieval error, please check whether the device is connected correctly!!!");
     delay(1000);
   }
-  Serial.print("id :0x"); Serial.println(sensor_id, HEX);
-
-  // Configure WiFi
-  Serial.println("Configuring access point...");
-  WiFi.softAP(ssid, password);
-  IPAddress myIP = WiFi.softAPIP();
-  Serial.print("AP IP address: ");
-  Serial.println(myIP);
-  server.begin();
-  Serial.println("Server started");
+  Serial.print("id :0x"); Serial.println(id, HEX);
+  // Connect to MQTT broker
+  mqttClient.setServer(mqttServer, mqttPort);
+  mqttClient.setCallback(mqttCallback);
+  reconnect();
 }
 
 void loop() {
-  // Get humidity value from A0 pin
-  humidityValue = analogRead(A0);
+  mqttClient.loop();
 
+  // Get humidity value from A0 pin
+  humidityValue = analogRead(A0)/100;
   // Get temperature from SHT40
   temperature = SHT40.getTemperature(PRECISION_HIGH);
-  if(temperature == MODE_ERR){
+  if(temperature == MODE_ERR) {
     Serial.println("Incorrect mode configuration to get temperature");
-  } else{
-    Serial.print("Temperature :"); Serial.print(temperature); Serial.println(" C");
   }
-
-  // Activate heater if humidity value is above a certain threshold
-  if(humidityValue > 700){
-    SHT40.enHeater(POWER_CONSUMPTION_H_HEATER_1S);
+  if (humidityValue < expect_humidity_low){
+    digitalWrite(relaypin, 0);
+    if (open_time == 0) {open_time = millis();}
   }
-
-  WiFiClient client = server.available();
-  if (client) {
-    Serial.println("New Client.");
-    String currentLine = "";
-    while (client.connected()) {
-      char c = client.read();
-      Serial.write(c);
-      if (c == '\n') {
-        if (currentLine.length() == 0) {
-          client.println("HTTP/1.1 200 OK");
-          client.println("Content-type:text/html");
-          client.println();
-          client.print(device_id);
-          client.print(" ");
-          client.print(humidityValue);
-          client.print(" ");
-          client.println(temperature);
-          // client.print("Click <a href=\"/H\">here</a> to turn ON the LED.<br>");
-          // client.print("Click <a href=\"/L\">here</a> to turn OFF the LED.<br>");
-          // if (currentLine.endsWith("GET /H")) {
-          //   client.print("Humidity Value from A0: "); client.println(humidityValue);
-          //   client.print("Temperature :"); client.print(temperature); client.println(" C");
-          // }
-          client.println();
-          if (humidityValue < optimalHumidity) {
-            //Open pump
-            analogWrite(pumpPin, HIGH);
-          }
-          else{
-            //Close pump
-            analogWrite(pumpPin, LOW);
-          }
-          break;
-        } else {
-          currentLine = "";
-        }
-      } else if (c != '\r') {
-        currentLine += c;
-      }
-      if (currentLine.endsWith("GET /L")) {
-        digitalWrite(LED_BUILTIN, LOW);
-      }
-    }
-    client.stop();
-    Serial.println("Client Disconnected.");
+  else{
+    digitalWrite(relaypin, 255);
+    if (open_time != 0) {
+      long int session_time = millis() - open_time;
+      String irrValues = "1 " + String(session_time);
+      mqttClient.publish("esp32/Irrigation", irrValues.c_str());
+      open_time = 0;    }
   }
-  delay(1000);
-  Serial.println("----------------------------------------");
+  // Publish temperature and humidity values to MQTT broker
+  String tempPayload = String(temperature);
+  String humidityPayload = String(humidityValue);
+  String envValues = tempPayload +" " + humidityPayload;
+  mqttClient.publish("esp32/environment", envValues.c_str());
+  delay(3000); // Publish every 3 seconds
+  
 }
